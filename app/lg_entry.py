@@ -300,12 +300,12 @@ def _upsert_companies_from_staging_by_industries_old(industries: List[str]) -> i
                       {src_name} AS entity_name,
                       {src_desc} AS primary_ssic_description,
                       {src_code} AS primary_ssic_code,
-                      ref.code AS ssic_code,
+
+                      CAST({src_code} AS TEXT) AS ssic_code,
                       {src_year_expr} AS incorporation_year,
                       {src_stat} AS entity_status_de
                     FROM staging_acra_companies sc
-                    LEFT JOIN ssic_ref_latest ref
-                      ON CAST({src_code} AS TEXT) = ref.code
+
                     WHERE CAST({src_code} AS TEXT) = ANY(%s::text[])
                 """
                 select_params = (code_list,)
@@ -322,12 +322,11 @@ def _upsert_companies_from_staging_by_industries_old(industries: List[str]) -> i
                       {src_name} AS entity_name,
                       {src_desc} AS primary_ssic_description,
                       {src_code} AS primary_ssic_code,
-                      ref.code AS ssic_code,
+                      CAST({src_code} AS TEXT) AS ssic_code,
                       {src_year_expr} AS incorporation_year,
                       {src_stat} AS entity_status_de
                     FROM staging_acra_companies sc
-                    LEFT JOIN ssic_ref_latest ref
-                      ON CAST({src_code} AS TEXT) = ref.code
+
                     WHERE LOWER({src_desc}) = ANY(%s::text[])
                        OR {src_desc} ILIKE ANY(%s::text[])
                 """
@@ -537,14 +536,17 @@ def _upsert_companies_from_staging_by_industries(industries: List[str]) -> int:
             norm_inds = [
                 (t or "").strip().lower() for t in industries if (t or "").strip()
             ]
+            like_patterns = [f"%{t}%" for t in norm_inds]
             cur.execute(
                 """
                 SELECT DISTINCT code AS ssic_code, LOWER(description)
-                FROM ssic_ref_latest
+                FROM ssic_ref
                 WHERE LOWER(description) = ANY(%s)
                    OR LOWER(title) = ANY(%s)
+                   OR LOWER(description) LIKE ANY(%s)
+                   OR LOWER(title) LIKE ANY(%s)
                 """,
-                (norm_inds, norm_inds),
+                (norm_inds, norm_inds, like_patterns, like_patterns),
             )
             rows = cur.fetchall()
             code_map = {
@@ -560,12 +562,11 @@ def _upsert_companies_from_staging_by_industries(industries: List[str]) -> int:
                   {src_name} AS entity_name,
                   {src_desc} AS primary_ssic_description,
                   {src_code} AS primary_ssic_code,
-                  ref.code AS ssic_code,
+                  CAST({src_code} AS TEXT) AS ssic_code,
                   {src_year} AS incorporation_year,
                   {src_stat} AS entity_status_de
                 FROM staging_acra_companies sc
-                LEFT JOIN ssic_ref_latest ref
-                  ON CAST({src_code} AS TEXT) = ref.code
+
                 WHERE CAST({src_code} AS TEXT) = ANY(%s)
                 LIMIT 1000
             """

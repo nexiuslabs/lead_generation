@@ -230,13 +230,12 @@ def _upsert_companies_from_staging_by_industries_old(industries: list[str]) -> i
                   {src_name} AS entity_name,
                   {src_desc} AS primary_ssic_description,
                   {src_code} AS primary_ssic_code,
-                  ref.code AS ssic_code,
+                  CAST({src_code} AS TEXT) AS ssic_code,
+
                   {src_web}  AS website,
                   {src_year} AS incorporation_year,
                   {src_stat} AS entity_status_de
                 FROM staging_acra_companies sc
-                LEFT JOIN ssic_ref_latest ref
-                  ON CAST({src_code} AS TEXT) = ref.code
                 WHERE LOWER({src_desc}) = ANY(%s)
                    OR LOWER({src_desc}) ILIKE ANY(%s)
                 LIMIT 1000
@@ -419,14 +418,18 @@ def _upsert_companies_from_staging_by_industries(industries: list[str]) -> int:
             norm_inds = [
                 (t or "").strip().lower() for t in industries if (t or "").strip()
             ]
+            like_patterns = [f"%{t}%" for t in norm_inds]
             cur.execute(
                 """
                 SELECT DISTINCT code AS ssic_code, LOWER(description)
-                FROM ssic_ref_latest
+                FROM ssic_ref
+
                 WHERE LOWER(description) = ANY(%s)
                    OR LOWER(title) = ANY(%s)
+                   OR LOWER(description) LIKE ANY(%s)
+                   OR LOWER(title) LIKE ANY(%s)
                 """,
-                (norm_inds, norm_inds),
+                (norm_inds, norm_inds, like_patterns, like_patterns),
             )
             code_rows = cur.fetchall()
             code_map = {
@@ -442,13 +445,14 @@ def _upsert_companies_from_staging_by_industries(industries: list[str]) -> int:
                   {src_name} AS entity_name,
                   {src_desc} AS primary_ssic_description,
                   {src_code} AS primary_ssic_code,
-                  ref.code AS ssic_code,
+
+                  CAST({src_code} AS TEXT) AS ssic_code,
+
                   {src_web}  AS website,
                   {src_year} AS incorporation_year,
                   {src_stat} AS entity_status_de
                 FROM staging_acra_companies sc
-                LEFT JOIN ssic_ref_latest ref
-                  ON CAST({src_code} AS TEXT) = ref.code
+
                 WHERE CAST({src_code} AS TEXT) = ANY(%s)
                 LIMIT 1000
             """
