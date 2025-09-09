@@ -36,11 +36,12 @@ LANGCHAIN_MODEL = os.getenv("LANGCHAIN_MODEL", "gpt-4o-mini")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 
 
-# Turn off all LangChain tracing/telemetry
-os.environ["LANGCHAIN_TRACING"] = "false"
-os.environ["LANGCHAIN_TRACING_V2"] = "false"
-# Remove any Smith API key so no telemetry is sent
-os.environ.pop("LANGSMITH_API_KEY", None)
+# Honor existing LangChain/LangSmith env. If you want to disable telemetry,
+# set DISABLE_LANGSMITH=1 in your environment.
+if os.getenv("DISABLE_LANGSMITH", "0").lower() in ("1", "true", "yes", "on"):
+    os.environ["LANGCHAIN_TRACING"] = "false"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
+    os.environ.pop("LANGSMITH_API_KEY", None)
 
 # Tavily API Key
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")

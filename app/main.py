@@ -423,7 +423,7 @@ except Exception as e:
     logger.warning("Skipping /agent routes due to initialization error: %s", e)
 
 @app.get("/info")
-async def info(_: dict = Depends(require_auth)):
+async def info(_: dict = Depends(require_optional_identity)):
     return {"ok": True}
 
 @app.get("/whoami")

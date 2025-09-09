@@ -6,10 +6,6 @@ import json
 import jwt
 from fastapi import HTTPException, Request
 
-# Raw envs (may contain whitespace); access via helpers below
-_ISSUER_RAW = os.getenv("NEXIUS_ISSUER")
-_AUD_RAW = os.getenv("NEXIUS_AUDIENCE")
-
 
 def _is_truthy(val: str | None) -> bool:
     if val is None:
@@ -18,13 +14,15 @@ def _is_truthy(val: str | None) -> bool:
 
 
 def _issuer() -> str:
-    if not _ISSUER_RAW or not _ISSUER_RAW.strip():
+    raw = os.getenv("NEXIUS_ISSUER")
+    if not raw or not raw.strip():
         raise HTTPException(status_code=500, detail="SSO issuer not configured")
-    return _ISSUER_RAW.strip()
+    return raw.strip()
 
 
 def _audience() -> str | None:
-    return (_AUD_RAW or "").strip() or None
+    raw = os.getenv("NEXIUS_AUDIENCE")
+    return (raw or "").strip() or None
 
 
 @lru_cache(maxsize=1)
@@ -169,11 +167,17 @@ async def require_optional_identity(request: Request) -> dict:
       attached the token yet, while still verifying when a token is present.
     """
     auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        claims = verify_jwt(auth[7:])
-        request.state.tenant_id = claims.get("tenant_id")
-        request.state.roles = claims.get("roles", [])
-        return claims
+    if auth.startswith("Bearer ") and bool(os.getenv("NEXIUS_ISSUER")):
+        try:
+            claims = verify_jwt(auth[7:])
+            request.state.tenant_id = claims.get("tenant_id")
+            request.state.roles = claims.get("roles", [])
+            return claims
+        except HTTPException as e:
+            # Fall back silently for onboarding/session flows when token validation fails
+            # (e.g., JWKS network issue). Continue with synthesized identity below.
+            import logging
+            logging.getLogger("onboarding").warning("optional_identity token verify failed: %s", e.detail)
 
     # No bearer presented; synthesize minimal identity from headers/env
     email = request.headers.get("X-User-Email") or os.getenv("DEV_USER_EMAIL", "dev@local")

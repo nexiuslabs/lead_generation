@@ -37,6 +37,18 @@ def _resolve_tenant_id(email: str, claim_tid: Optional[int]) -> Optional[int]:
                     return int(row[0])
         except Exception:
             pass
+    else:
+        # If no DSN is configured, and there's exactly one active mapping, use it
+        try:
+            with get_conn() as conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT tenant_id, db_name FROM odoo_connections WHERE active=TRUE LIMIT 2"
+                )
+                rows = cur.fetchall() or []
+                if len(rows) == 1:
+                    return int(rows[0][0])
+        except Exception:
+            pass
 
     # Priority 2: tenant_id from claim (if present)
     if claim_tid is not None:
@@ -97,4 +109,3 @@ async def get_odoo_connection_info(email: str, claim_tid: Optional[int]) -> Dict
             "error": error,
         },
     }
-
