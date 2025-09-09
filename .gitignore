@@ -63,7 +63,8 @@ venv/
 ENV/
 env/
 venv.bak/
-env.bak/
+env.bak
+.env
 
 # Project secrets (explicit)
 # Note: We intentionally allow .env files to be tracked per user request.

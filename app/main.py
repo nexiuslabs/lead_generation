@@ -76,10 +76,34 @@ def _role_to_type(role: str) -> str:
     if r == "system": return "system"
     return "human"
 
+def _content_to_text(content) -> str:
+    try:
+        if isinstance(content, str):
+            return content
+        # LangGraph SDK may send MessageContentComplex[]
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    t = block.get("type")
+                    if t == "text":
+                        parts.append(str(block.get("text", "")))
+                    # ignore images, attachments, tool_use etc. for normalization
+                else:
+                    try:
+                        parts.append(str(block))
+                    except Exception:
+                        pass
+            return "\n".join(p for p in parts if p)
+        # Fallback to string conversion
+        return str(content)
+    except Exception:
+        return ""
+
 def _to_message(msg: dict) -> BaseMessage:
     # Accepts {"role":"human","content":"..."} or {"type":"ai","content":"..."}
     mtype = msg.get("type") or _role_to_type(msg.get("role", "human"))
-    content = msg.get("content", "")
+    content = _content_to_text(msg.get("content", ""))
     if mtype == "human":
         return HumanMessage(content=content)
     if mtype == "system":
@@ -93,10 +117,12 @@ def _last_human_text(messages: list[BaseMessage] | None) -> str:
     # Scan from end to find last HumanMessage
     for m in reversed(messages):
         if isinstance(m, HumanMessage):
-            return (m.content or "").strip()
+            c = m.content
+            ctext = _content_to_text(c)
+            return (ctext or "").strip()
     # Fallback to last message content
     try:
-        return (messages[-1].content or "").strip()
+        return (_content_to_text(messages[-1].content) or "").strip()
     except Exception:
         return ""
 
@@ -380,7 +406,20 @@ def normalize_input(payload: dict) -> dict:
     msgs = data.get("messages") or []
     if isinstance(msgs, dict):  # sometimes a single message object is sent
         msgs = [msgs]
-    norm_msgs = [_to_message(m) if not isinstance(m, BaseMessage) else m for m in msgs]
+    def _coerce_message_text(m: BaseMessage) -> BaseMessage:
+        ctext = _content_to_text(getattr(m, "content", ""))
+        if isinstance(m, HumanMessage):
+            return HumanMessage(content=ctext)
+        if isinstance(m, SystemMessage):
+            return SystemMessage(content=ctext)
+        return AIMessage(content=ctext)
+
+    norm_msgs: list[BaseMessage] = []
+    for m in msgs:
+        if isinstance(m, BaseMessage):
+            norm_msgs.append(_coerce_message_text(m))
+        else:
+            norm_msgs.append(_to_message(m))
 
     # Ensure we always have at least one message
     if not norm_msgs:

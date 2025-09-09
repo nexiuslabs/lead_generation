@@ -36,9 +36,10 @@ LANGCHAIN_MODEL = os.getenv("LANGCHAIN_MODEL", "gpt-4o-mini")
 TEMPERATURE = float(os.getenv("TEMPERATURE", "0.3"))
 
 
-# Honor existing LangChain/LangSmith env. If you want to disable telemetry,
-# set DISABLE_LANGSMITH=1 in your environment.
-if os.getenv("DISABLE_LANGSMITH", "0").lower() in ("1", "true", "yes", "on"):
+# LangSmith/Tracing: default OFF for production unless explicitly enabled.
+# Set ENABLE_LANGSMITH=1 to turn on tracing/telemetry.
+_enable_langsmith = os.getenv("ENABLE_LANGSMITH", "0").lower() in ("1", "true", "yes", "on")
+if not _enable_langsmith:
     os.environ["LANGCHAIN_TRACING"] = "false"
     os.environ["LANGCHAIN_TRACING_V2"] = "false"
     os.environ.pop("LANGSMITH_API_KEY", None)
