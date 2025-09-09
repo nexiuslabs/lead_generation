@@ -547,7 +547,13 @@ EXTRACT_SYS = SystemMessage(
 
 async def extract_update_from_text(text: str) -> ICPUpdate:
     structured = EXTRACT_LLM.with_structured_output(ICPUpdate)
-    return await structured.ainvoke([EXTRACT_SYS, HumanMessage(text)])
+    try:
+        return await structured.ainvoke([EXTRACT_SYS, HumanMessage(text)])
+    except Exception as e:
+        # Make ICP extraction robust to LLM outages or invalid API keys.
+        # Log and fall back to an empty update so the dialogue can continue.
+        logger.exception("ICP extract failed; falling back to defaults: %s", e)
+        return ICPUpdate()
 
 
 # ------------------------------
