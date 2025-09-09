@@ -603,7 +603,7 @@ def _fmt_icp(icp: Dict[str, Any]) -> str:
     )
 
 
-def next_icp_question(icp: Dict[str, Any]) -> tuple[str, str]:
+def next_icp_question(icp: Dict[str, Any], ask_counts: Dict[str, int] | None = None) -> tuple[str, str]:
     order: List[str] = []
     if not icp.get("industries"):
         order.append("industries")
@@ -625,7 +625,11 @@ def next_icp_question(icp: Dict[str, Any]) -> tuple[str, str]:
             "confirm",
         )
 
-    focus = order[0]
+    # Choose the least-asked missing focus to ensure coverage across all ICP fields
+    if ask_counts:
+        focus = min(order, key=lambda f: ask_counts.get(f, 0))
+    else:
+        focus = order[0]
     prompts = {
         "industries": "Which industries or problem spaces should we target? (e.g., SaaS, logistics, fintech)",
         "employees": "What's the typical employee range? (e.g., 10–200)",
@@ -1452,7 +1456,18 @@ def build_graph():
     # Every worker node loops back to the router
     for node in ("icp", "candidates", "confirm", "enrich", "score"):
         g.add_edge(node, "router")
-    return g.compile()
+    # Enable checkpointing so ICP state (icp, ask_counts, candidates, etc.) persists across turns
+    try:
+        import os
+        from pathlib import Path
+        from langgraph.checkpoint.sqlite import SqliteSaver
+        cdir = os.environ.get("LANGGRAPH_CHECKPOINT_DIR", ".langgraph_api")
+        Path(cdir).mkdir(parents=True, exist_ok=True)
+        saver = SqliteSaver.from_file(Path(cdir) / "icp_graph.sqlite")
+        return g.compile(checkpointer=saver)
+    except Exception:
+        # Fallback to volatile graph without persistence if sqlite saver unavailable
+        return g.compile()
 
 
 GRAPH = build_graph()
