@@ -170,6 +170,11 @@ async def persist_results(state: LeadScoringState) -> LeadScoringState:
             );
             """
         )
+        # Ensure created_at for windowed acceptance metrics
+        try:
+            await conn.execute("ALTER TABLE lead_scores ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT now()")
+        except Exception:
+            pass
         # Detect tenant_id column presence
         has_tenant = bool(
             await conn.fetchval(

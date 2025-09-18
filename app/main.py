@@ -85,6 +85,168 @@ try:
 except Exception as _e:
     logger.warning("Graph proxy not mounted: %s", _e)
 
+
+def _set_tenant_guc(cur, tenant_id: int | None):
+    try:
+        if tenant_id is not None:
+            cur.execute("SELECT set_config('request.tenant_id', %s, true)", (str(int(tenant_id)),))
+    except Exception:
+        pass
+
+
+@app.get("/acceptance/report")
+def acceptance_report(request: Request, _: dict = Depends(require_auth)):
+    """Return acceptance metrics for the authenticated tenant.
+
+    Response fields:
+      - mv_candidates: int
+      - shortlisted: int
+      - domain_rate: float (0..1)
+      - about_rate: float (0..1)
+      - email_rate: float (0..1)
+      - bucket_counts: { bucket: count }
+      - rationale_rate: float (0..1)
+    """
+    # Resolve tenant from request.state set by require_auth
+    # and execute queries with RLS scoping via request.tenant GUC.
+    with get_conn() as conn, conn.cursor() as cur:
+        # Enforce RLS scoping for this connection
+        tid = getattr(getattr(request, "state", object()), "tenant_id", None)
+        try:
+            _set_tenant_guc(cur, int(tid) if tid is not None else None)
+        except Exception:
+            try:
+                import os as _os
+                raw = _os.getenv("DEFAULT_TENANT_ID")
+                fallback_tid = int(raw) if raw and raw.isdigit() else None
+                _set_tenant_guc(cur, fallback_tid)
+            except Exception:
+                pass
+
+        def _one(q: str, params: tuple | None = None, default=0):
+            try:
+                cur.execute(q, params or tuple())
+                row = cur.fetchone()
+                return int(row[0] or 0) if row else default
+            except Exception:
+                return default
+
+        def _ratio(num_q: str, den_q: str, params: tuple | None = None) -> float:
+            try:
+                cur.execute(num_q, params or tuple())
+                a = cur.fetchone()
+                num = float(a[0] or 0) if a else 0.0
+            except Exception:
+                num = 0.0
+            try:
+                cur.execute(den_q, params or tuple())
+                b = cur.fetchone()
+                den = float(b[0] or 0) if b else 0.0
+            except Exception:
+                den = 0.0
+            return (num / den) if den > 0 else 0.0
+
+        # Determine window scope
+        scope = (request.query_params.get("scope") or "latest").lower()
+        since_hours_param = request.query_params.get("since_hours")
+        try:
+            since_hours = int(since_hours_param) if since_hours_param else 24
+        except Exception:
+            since_hours = 24
+        start_ts = None
+        end_ts = None
+        if scope == "latest":
+            try:
+                cur.execute(
+                    "SELECT started_at, COALESCE(ended_at, NOW()) FROM enrichment_runs ORDER BY started_at DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if row and row[0]:
+                    start_ts, end_ts = row[0], row[1]
+            except Exception:
+                start_ts = None
+        if start_ts is None:
+            # fallback to since window
+            cur.execute("SELECT NOW() - (%s || ' hours')::interval, NOW()", (str(since_hours),))
+            row = cur.fetchone()
+            start_ts, end_ts = row[0], row[1]
+
+        window = (start_ts, end_ts)
+
+        # mv_candidates (global MV; best-effort)
+        mv_candidates = _one("SELECT COUNT(*) FROM icp_candidate_companies")
+
+        # shortlisted within window
+        shortlisted = _one("SELECT COUNT(*) FROM lead_scores WHERE created_at BETWEEN %s AND %s", window)
+
+        # domain rate among scored companies
+        domain_rate = _ratio(
+            "SELECT SUM(CASE WHEN c.website_domain IS NOT NULL AND c.website_domain<>'' THEN 1 ELSE 0 END) FROM companies c JOIN lead_scores s ON s.company_id=c.company_id WHERE s.created_at BETWEEN %s AND %s",
+            "SELECT COUNT(*) FROM companies c JOIN lead_scores s ON s.company_id=c.company_id WHERE s.created_at BETWEEN %s AND %s",
+            window,
+        )
+
+        # about text rate among enrichment runs joined to scored
+        about_rate = _ratio(
+            "SELECT SUM(CASE WHEN COALESCE(NULLIF(TRIM(r.about_text), ''), NULL) IS NOT NULL THEN 1 ELSE 0 END) FROM company_enrichment_runs r JOIN lead_scores s ON s.company_id=r.company_id WHERE s.created_at BETWEEN %s AND %s",
+            "SELECT COUNT(*) FROM company_enrichment_runs r JOIN lead_scores s ON s.company_id=r.company_id WHERE s.created_at BETWEEN %s AND %s",
+            window,
+        )
+
+        # email availability rate among scored (valid or unknown)
+        email_rate = _ratio(
+            "SELECT SUM(CASE WHEN EXISTS (SELECT 1 FROM lead_emails e WHERE e.company_id=s.company_id AND COALESCE(e.verification_status,'unknown') IN ('valid','unknown')) THEN 1 ELSE 0 END) FROM lead_scores s WHERE s.created_at BETWEEN %s AND %s",
+            "SELECT COUNT(*) FROM lead_scores s WHERE s.created_at BETWEEN %s AND %s",
+            window,
+        )
+
+        # bucket counts
+        bucket_counts: dict[str, int] = {}
+        try:
+            cur.execute("SELECT LOWER(COALESCE(bucket,'')) AS b, COUNT(*) FROM lead_scores WHERE created_at BETWEEN %s AND %s GROUP BY 1", window)
+            for b, cnt in cur.fetchall() or []:
+                bucket_counts[str(b or "")] = int(cnt or 0)
+        except Exception:
+            bucket_counts = {}
+
+        # rationale rate among scored
+        rationale_rate = _ratio(
+            "SELECT SUM(CASE WHEN NULLIF(TRIM(rationale),'') IS NOT NULL THEN 1 ELSE 0 END) FROM lead_scores WHERE created_at BETWEEN %s AND %s",
+            "SELECT COUNT(*) FROM lead_scores WHERE created_at BETWEEN %s AND %s",
+            window,
+        )
+
+    out = {
+        "mv_candidates": mv_candidates,
+        "shortlisted": shortlisted,
+        "domain_rate": round(domain_rate, 4),
+        "about_rate": round(about_rate, 4),
+        "email_rate": round(email_rate, 4),
+        "bucket_counts": bucket_counts,
+        "rationale_rate": round(rationale_rate, 4),
+         "window": {"start": start_ts, "end": end_ts, "scope": scope, "since_hours": since_hours},
+    }
+    # Optional pass/fail summary thresholds (use defaults if not provided)
+    try:
+        import os as _os
+        thr_domain = float(_os.getenv("ACCEPT_DOMAIN_RATE", "0.7") or 0.7)
+        thr_about = float(_os.getenv("ACCEPT_ABOUT_RATE", "0.6") or 0.6)
+        thr_email = float(_os.getenv("ACCEPT_EMAIL_RATE", "0.4") or 0.4)
+        thr_bucket_max = float(_os.getenv("ACCEPT_BUCKET_MAX", "0.7") or 0.7)
+        total_b = sum(bucket_counts.values()) or 0
+        max_share = max((cnt / total_b for cnt in bucket_counts.values()), default=0.0)
+        passes = (domain_rate >= thr_domain) and (about_rate >= thr_about) and (email_rate >= thr_email) and (max_share <= thr_bucket_max)
+        out["pass"] = bool(passes)
+        out["thresholds"] = {
+            "domain": thr_domain,
+            "about": thr_about,
+            "email": thr_email,
+            "bucket_max": thr_bucket_max,
+        }
+    except Exception:
+        pass
+    return out
+
 def _role_to_type(role: str) -> str:
     r = (role or "").lower()
     if r in ("user", "human"): return "human"
